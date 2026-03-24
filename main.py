@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List
 from groq import Groq
@@ -114,6 +114,65 @@ async def transcribe_audio(file: UploadFile = File(...)):
             "transcript": transcript.strip(),
             "detected_language": info.language,
             "confidence": info.language_probability
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    # --- THE ALL-IN-ONE VOICE CHAT ROUTE ---
+
+@app.post("/api/voice-chat")
+async def voice_chat_with_ai(
+    file: UploadFile = File(...),
+    # We accept the chat history as a JSON string because we are using multipart/form-data for the file
+    messages_json: str = Form("[]") 
+):
+    try:
+        # 1. Save the incoming audio file temporarily
+        temp_file_path = f"temp_voice_{file.filename}"
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # 2. Transcribe the audio using your RTX 5060
+        segments, info = whisper_model.transcribe(temp_file_path, beam_size=5)
+        
+        # Join the transcribed segments into one string
+        user_text = "".join([segment.text + " " for segment in segments]).strip()
+        
+        # Clean up the temp file
+        if os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+
+        # 3. Parse the conversation history sent from the frontend
+        history = json.loads(messages_json)
+        
+        # 4. Build the prompt for Llama 3
+        system_prompt = "You are an expert technical interviewer conducting a mock interview. Ask one question at a time. Keep your responses professional, conversational, and concise."
+        groq_messages = [{"role": "system", "content": system_prompt}]
+        
+        # Append the old history
+        for msg in history:
+            # We use dictionary syntax here because history is parsed from a JSON string
+            groq_messages.append({"role": msg["role"], "content": msg["content"]})
+            
+        # Append the brand new transcribed text from the user's audio
+        groq_messages.append({"role": "user", "content": user_text})
+        
+        # 5. Send it all to Groq
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=groq_messages,
+            temperature=0.7,
+            max_tokens=500,
+        )
+        
+        ai_response = completion.choices[0].message.content
+        
+        # 6. Return EVERYTHING the frontend needs in one go
+        return {
+            "user_transcript": user_text, # So the React UI can show what the user said
+            "ai_response": ai_response,   # What the AI replied
+            "detected_language": info.language
         }
         
     except Exception as e:
