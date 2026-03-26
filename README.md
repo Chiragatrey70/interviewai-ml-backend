@@ -1,8 +1,5 @@
-Here is the complete, updated developer handoff prompt formatted specifically as a README.md file. It includes all the architecture decisions, API contracts, and the critical v5.4 production upgrades we made today.
-
-You can copy this entire block, save it as README.md in your repository, and use it to instantly onboard any new developer or AI assistant!
-
 InterviewAI ML Backend (v5.4)
+
 📌 Project Overview
 InterviewAI (PrepMate) is a state-free, GPU-accelerated Python microservice designed to handle heavy Machine Learning tasks for a React/Node.js mock interview platform. It acts as the "Brain" and "Voice" of the AI interviewer, focusing on fast execution, strict JSON API contracts, and robust multi-user concurrency.
 
