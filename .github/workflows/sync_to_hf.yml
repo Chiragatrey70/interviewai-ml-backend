@@ -19,4 +19,4 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           # Replace YOUR_HF_USERNAME and YOUR_SPACE_NAME below
-          git push --force https://chiragatrey70:$HF_TOKEN@huggingface.co/spaces/chiragatrey70/chiragatrey70/interviewai-backend-ML main
+          git push --force https://chiragatrey70:$HF_TOKEN@huggingface.co/spaces/chiragatrey70/interviewai-backend-ML main
