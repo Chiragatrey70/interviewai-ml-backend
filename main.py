@@ -19,10 +19,10 @@ load_dotenv()
 
 app = FastAPI(title="InterviewAI ML Backend", version="5.7")
 client = Groq()
-
-print("Waking up the RTX 5060 and loading Whisper into VRAM...")
-whisper_model = WhisperModel("base", device="cuda", compute_type="float16")
-print("Whisper is locked and loaded!")
+print("Waking up and loading Whisper into CPU RAM...")
+# Modified for Hugging Face Free Tier (CPU only)
+whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+print("Whisper is locked and loaded on CPU!")
 
 # --- HELPER FUNCTIONS (Defense in Depth) ---
 def normalize_lang_code(lang: str) -> str:
