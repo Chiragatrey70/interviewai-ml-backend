@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
@@ -12,16 +12,43 @@ import fitz  # PyMuPDF
 import librosa
 import numpy as np
 import edge_tts
+import uuid 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="InterviewAI ML Backend", version="5.0")
+app = FastAPI(title="InterviewAI ML Backend", version="5.4")
 client = Groq()
 
 print("Waking up the RTX 5060 and loading Whisper into VRAM...")
 whisper_model = WhisperModel("base", device="cuda", compute_type="float16")
 print("Whisper is locked and loaded!")
+
+# --- HELPER FUNCTIONS (Defense in Depth) ---
+def normalize_lang_code(lang: str) -> str:
+    """Ensures we always have a clean 2-letter ISO code for TTS routing."""
+    lang = lang.lower().strip()
+    mapping = {
+        "english": "en", "en": "en",
+        "hindi": "hi", "hi": "hi",
+        "tamil": "ta", "ta": "ta",
+        "telugu": "te", "te": "te",
+        "bengali": "bn", "bn": "bn",
+        "marathi": "mr", "mr": "mr"
+    }
+    return mapping.get(lang, "en") # Default to English if confused
+
+def get_full_lang_name(lang_code: str) -> str:
+    """Gives Llama 3 the explicit full name of the language to prevent English bleed-through."""
+    mapping = {
+        "en": "English",
+        "hi": "Hindi (in Devanagari script)",
+        "ta": "Tamil",
+        "te": "Telugu",
+        "bn": "Bengali",
+        "mr": "Marathi"
+    }
+    return mapping.get(lang_code, "English")
 
 # --- PYDANTIC MODELS (The API Contract) ---
 
@@ -51,28 +78,27 @@ class GenerateQuestionInput(BaseModel):
     language: str
     history: List[ChatMessage]
 
+
 # ---------------------------------------------------------
 # ROUTE 1: HEALTH CHECK (/health)
 # ---------------------------------------------------------
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "ML Backend running with Live Interview capabilities!"}
+    return {"status": "ok", "service": "ML Backend running with V5.4 Bulletproof Language Routing!"}
+
 
 # ---------------------------------------------------------
 # ROUTE 2: SPEECH TO TEXT (/stt)
 # ---------------------------------------------------------
 @app.post("/stt")
 async def speech_to_text(file: UploadFile = File(...)):
+    temp_file = f"temp_stt_{uuid.uuid4().hex}_{file.filename}"
     try:
-        temp_file = f"temp_{file.filename}"
         with open(temp_file, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
         segments, info = whisper_model.transcribe(temp_file, beam_size=5)
         transcript_text = "".join([segment.text + " " for segment in segments]).strip()
-        
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
             
         return {
             "transcript": transcript_text,
@@ -81,6 +107,10 @@ async def speech_to_text(file: UploadFile = File(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+
 
 # ---------------------------------------------------------
 # ROUTE 3: GENERATE NEXT QUESTION (/generate-question)
@@ -88,18 +118,27 @@ async def speech_to_text(file: UploadFile = File(...)):
 @app.post("/generate-question")
 def generate_question(request: GenerateQuestionInput):
     try:
+        history_length = len(request.history)
+        lang_code = normalize_lang_code(request.language)
+        full_lang_name = get_full_lang_name(lang_code)
+        
         system_prompt = f"""You are an expert technical interviewer conducting a mock interview for a {request.domain} role.
         Your task is to ask the NEXT single interview question based on the conversation history.
         - Ask ONLY ONE question.
         - Do NOT evaluate the candidate's previous answer (save that for the end).
         - Keep it conversational, professional, and concise.
-        - You MUST respond entirely in this language: {request.language}.
+        - CRITICAL INSTRUCTION: You MUST speak, think, and respond EXCLUSIVELY in {full_lang_name}. Do NOT use English unless the requested language is English.
+        - The interview has had {history_length} exchanges so far. If this is 8 or more exchanges, wrap up the interview naturally by thanking the candidate and telling them the interview is over.
         """
 
         messages = [{"role": "system", "content": system_prompt}]
-        for msg in request.history:
-            role = "assistant" if msg.speaker == "ai" else "user"
-            messages.append({"role": role, "content": msg.text})
+        
+        if not request.history:
+            messages.append({"role": "user", "content": f"Start the interview. Ask the very first question for a {request.domain} role."})
+        else:
+            for msg in request.history:
+                role = "assistant" if msg.speaker == "ai" else "user"
+                messages.append({"role": role, "content": msg.text})
 
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -115,18 +154,22 @@ def generate_question(request: GenerateQuestionInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ---------------------------------------------------------
 # ROUTE 4: INTERVIEW EVALUATION (/evaluate)
 # ---------------------------------------------------------
 @app.post("/evaluate")
 def evaluate_interview(request: EvaluateInput):
     try:
+        lang_code = normalize_lang_code(request.language)
+        full_lang_name = get_full_lang_name(lang_code)
+        
         script = ""
         for turn in request.transcript:
             script += f"{turn.speaker.upper()}: {turn.text}\n"
 
         system_prompt = f"""You are an expert technical interviewer analyzing a candidate for a {request.domain} role.
-        Language to evaluate: {request.language}.
+        CRITICAL INSTRUCTION: All textual feedback ("feedback", "strengths", "improvements") MUST be written exclusively in {full_lang_name}.
         Review the transcript and return strict JSON exactly matching this structure:
         {{
           "scores": {{
@@ -156,12 +199,13 @@ def evaluate_interview(request: EvaluateInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ---------------------------------------------------------
 # ROUTE 5: RESUME PARSER (/parse-resume)
 # ---------------------------------------------------------
 @app.post("/parse-resume")
 def parse_resume(request: ParseResumeInput):
-    temp_pdf = "temp_resume.pdf"
+    temp_pdf = f"temp_resume_{uuid.uuid4().hex}.pdf"
     try:
         pdf_data = base64.b64decode(request.resume_base64)
         with open(temp_pdf, "wb") as f:
@@ -201,13 +245,14 @@ def parse_resume(request: ParseResumeInput):
         if os.path.exists(temp_pdf):
             os.remove(temp_pdf)
 
+
 # ---------------------------------------------------------
 # ROUTE 6: AUDIO CONFIDENCE SCORING (/audio-confidence)
 # ---------------------------------------------------------
 @app.post("/audio-confidence")
 async def audio_confidence(file: UploadFile = File(...)):
+    temp_file = f"temp_audio_{uuid.uuid4().hex}_{file.filename}"
     try:
-        temp_file = f"temp_audio_{file.filename}"
         with open(temp_file, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
@@ -229,12 +274,12 @@ async def audio_confidence(file: UploadFile = File(...)):
         energy_level = "low"
         if mean_rms > 0.05: energy_level = "moderate"
         if mean_rms > 0.15: energy_level = "high"
-        
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+            
+        raw_score = 7.0 + (mean_rms * 10) - (silence_ratio * 2)
+        clamped_score = max(1.0, min(10.0, round(raw_score, 1)))
             
         return {
-            "confidence_score": round(7.0 + (mean_rms * 10) - (silence_ratio * 2), 1), 
+            "confidence_score": clamped_score, 
             "speaking_pace_wpm": 130, 
             "silence_ratio": round(silence_ratio, 2),
             "pitch_variation": pitch_variation,
@@ -242,34 +287,36 @@ async def audio_confidence(file: UploadFile = File(...)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+
 
 # ---------------------------------------------------------
 # ROUTE 7: TEXT-TO-SPEECH (/tts)
 # ---------------------------------------------------------
 @app.post("/tts")
-async def text_to_speech(request: TTSRequest):
+async def text_to_speech(request: TTSRequest, background_tasks: BackgroundTasks):
     try:
-        # Map the detected language to a premium Indian neural voice
+        lang_code = normalize_lang_code(request.language)
+        
         voice_map = {
-            "en": "en-IN-NeerjaNeural",   # Indian English
-            "hi": "hi-IN-SwaraNeural",    # Hindi
-            "ta": "ta-IN-PallaviNeural",  # Tamil
-            "te": "te-IN-ShrutiNeural",   # Telugu
-            "bn": "bn-IN-TanishaaNeural", # Bengali
-            "mr": "mr-IN-AarohiNeural"    # Marathi
+            "en": "en-IN-NeerjaNeural",   
+            "hi": "hi-IN-SwaraNeural",    
+            "ta": "ta-IN-PallaviNeural",  
+            "te": "te-IN-ShrutiNeural",   
+            "bn": "bn-IN-TanishaaNeural", 
+            "mr": "mr-IN-AarohiNeural"    
         }
         
-        # Default to Indian English if the language isn't in our map yet
-        voice = voice_map.get(request.language.lower(), "en-IN-NeerjaNeural")
+        voice = voice_map.get(lang_code, "en-IN-NeerjaNeural")
+        output_file = f"ai_response_{lang_code}_{uuid.uuid4().hex}.mp3"
         
-        # Define the output filename
-        output_file = f"ai_response_{request.language}.mp3"
-        
-        # Generate the audio using Microsoft's neural engine
         communicate = edge_tts.Communicate(request.text, voice)
         await communicate.save(output_file)
         
-        # Send the actual MP3 file back to the React frontend
+        background_tasks.add_task(os.remove, output_file)
+        
         return FileResponse(
             path=output_file, 
             media_type="audio/mpeg", 
