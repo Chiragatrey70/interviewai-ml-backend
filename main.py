@@ -12,12 +12,12 @@ import fitz  # PyMuPDF
 import librosa
 import numpy as np
 import edge_tts
-import uuid 
+import uuid
 from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="InterviewAI ML Backend", version="5.4")
+app = FastAPI(title="InterviewAI ML Backend", version="5.7")
 client = Groq()
 
 print("Waking up the RTX 5060 and loading Whisper into VRAM...")
@@ -30,30 +30,22 @@ def normalize_lang_code(lang: str) -> str:
     lang = lang.lower().strip()
     mapping = {
         "english": "en", "en": "en",
-        "hindi": "hi", "hi": "hi",
-        "tamil": "ta", "ta": "ta",
-        "telugu": "te", "te": "te",
-        "bengali": "bn", "bn": "bn",
-        "marathi": "mr", "mr": "mr"
+        "hindi": "hi", "hi": "hi"
     }
-    return mapping.get(lang, "en") # Default to English if confused
+    return mapping.get(lang, "en")  # Default to English if anything else is sent
 
 def get_full_lang_name(lang_code: str) -> str:
     """Gives Llama 3 the explicit full name of the language to prevent English bleed-through."""
     mapping = {
         "en": "English",
-        "hi": "Hindi (in Devanagari script)",
-        "ta": "Tamil",
-        "te": "Telugu",
-        "bn": "Bengali",
-        "mr": "Marathi"
+        "hi": "Hindi (in Devanagari script)"
     }
     return mapping.get(lang_code, "English")
 
 # --- PYDANTIC MODELS (The API Contract) ---
 
 class TranscriptTurn(BaseModel):
-    speaker: str # "ai" or "user"
+    speaker: str  # "ai" or "user"
     text: str
 
 class EvaluateInput(BaseModel):
@@ -67,10 +59,10 @@ class ParseResumeInput(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
-    language: str = "en" 
+    language: str  # No default value, forcing frontend compliance
 
 class ChatMessage(BaseModel):
-    speaker: str # "ai" or "user"
+    speaker: str  # "ai" or "user"
     text: str
 
 class GenerateQuestionInput(BaseModel):
@@ -84,7 +76,7 @@ class GenerateQuestionInput(BaseModel):
 # ---------------------------------------------------------
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "ML Backend running with V5.4 Bulletproof Language Routing!"}
+    return {"status": "ok", "service": "ML Backend running with V5.7 (Bilingual Prompt Isolation)"}
 
 
 # ---------------------------------------------------------
@@ -96,10 +88,10 @@ async def speech_to_text(file: UploadFile = File(...)):
     try:
         with open(temp_file, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
+
         segments, info = whisper_model.transcribe(temp_file, beam_size=5)
         transcript_text = "".join([segment.text + " " for segment in segments]).strip()
-            
+
         return {
             "transcript": transcript_text,
             "language_detected": info.language,
@@ -120,21 +112,38 @@ def generate_question(request: GenerateQuestionInput):
     try:
         history_length = len(request.history)
         lang_code = normalize_lang_code(request.language)
-        full_lang_name = get_full_lang_name(lang_code)
-        
-        system_prompt = f"""You are an expert technical interviewer conducting a mock interview for a {request.domain} role.
-        Your task is to ask the NEXT single interview question based on the conversation history.
-        - Ask ONLY ONE question.
-        - Do NOT evaluate the candidate's previous answer (save that for the end).
-        - Keep it conversational, professional, and concise.
-        - CRITICAL INSTRUCTION: You MUST speak, think, and respond EXCLUSIVELY in {full_lang_name}. Do NOT use English unless the requested language is English.
-        - The interview has had {history_length} exchanges so far. If this is 8 or more exchanges, wrap up the interview naturally by thanking the candidate and telling them the interview is over.
-        """
+
+        # --- BILINGUAL PROMPT ISOLATION ---
+        # Each language has its own fully isolated prompt.
+        # They cannot interfere with each other.
+
+        if lang_code == "hi":
+            system_prompt = f"""आप एक अनुभवी तकनीकी इंटरव्यूअर हैं जो {request.domain} के क्षेत्र में एक उम्मीदवार का मॉक इंटरव्यू ले रहे हैं।
+
+ABSOLUTE RULE: आपका पूरा जवाब केवल और केवल हिंदी में होना चाहिए। एक भी अंग्रेजी शब्द नहीं।
+
+आपका काम:
+- केवल एक ही सवाल पूछें।
+- पिछले जवाब का मूल्यांकन मत करें।
+- सवाल स्वाभाविक, professional और संक्षिप्त होना चाहिए।
+- इंटरव्यू में अब तक {history_length} exchanges हो चुके हैं। अगर यह 8 या उससे ज़्यादा है, तो उम्मीदवार को धन्यवाद देते हुए इंटरव्यू समाप्त करें।
+
+याद रखें: आप एक भारतीय कंपनी के senior interviewer हैं। हिंदी में बात करें जैसे एक असली इंटरव्यू में करते हैं।"""
+
+        else:  # English
+            system_prompt = f"""You are an expert technical interviewer conducting a mock interview for a {request.domain} role.
+- Ask ONLY ONE question.
+- Do NOT evaluate the candidate's previous answer (save that for the end).
+- Keep it conversational, professional, and concise.
+- The interview has had {history_length} exchanges so far. If this is 8 or more exchanges, wrap up naturally by thanking the candidate and telling them the interview is over."""
 
         messages = [{"role": "system", "content": system_prompt}]
-        
+
         if not request.history:
-            messages.append({"role": "user", "content": f"Start the interview. Ask the very first question for a {request.domain} role."})
+            if lang_code == "hi":
+                messages.append({"role": "user", "content": f"{request.domain} के लिए इंटरव्यू शुरू करें। पहला सवाल हिंदी में पूछें।"})
+            else:
+                messages.append({"role": "user", "content": f"Start the interview. Ask the very first question for a {request.domain} role."})
         else:
             for msg in request.history:
                 role = "assistant" if msg.speaker == "ai" else "user"
@@ -143,14 +152,12 @@ def generate_question(request: GenerateQuestionInput):
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
-            temperature=0.7, 
-            max_tokens=150,  
+            temperature=0.7,
+            max_tokens=150,
         )
 
-        next_question = completion.choices[0].message.content.strip()
+        return {"question": completion.choices[0].message.content.strip()}
 
-        return {"question": next_question}
-        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -163,7 +170,7 @@ def evaluate_interview(request: EvaluateInput):
     try:
         lang_code = normalize_lang_code(request.language)
         full_lang_name = get_full_lang_name(lang_code)
-        
+
         script = ""
         for turn in request.transcript:
             script += f"{turn.speaker.upper()}: {turn.text}\n"
@@ -194,7 +201,7 @@ def evaluate_interview(request: EvaluateInput):
             temperature=0.2,
             response_format={"type": "json_object"},
         )
-        
+
         return json.loads(completion.choices[0].message.content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -210,13 +217,13 @@ def parse_resume(request: ParseResumeInput):
         pdf_data = base64.b64decode(request.resume_base64)
         with open(temp_pdf, "wb") as f:
             f.write(pdf_data)
-            
+
         doc = fitz.open(temp_pdf)
         resume_text = ""
         for page in doc:
             resume_text += page.get_text()
         doc.close()
-        
+
         system_prompt = """You are an HR resume parser. Extract the data from the resume text provided.
         You MUST return strict JSON matching this structure perfectly:
         {
@@ -227,7 +234,7 @@ def parse_resume(request: ParseResumeInput):
           "previous_roles": ["<role1>", "<role2>"],
           "suggested_questions": ["<tailored question 1>", "<tailored question 2>"]
         }"""
-        
+
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
@@ -237,7 +244,7 @@ def parse_resume(request: ParseResumeInput):
             temperature=0.1,
             response_format={"type": "json_object"},
         )
-        
+
         return json.loads(completion.choices[0].message.content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -255,32 +262,32 @@ async def audio_confidence(file: UploadFile = File(...)):
     try:
         with open(temp_file, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
+
         y, sr = librosa.load(temp_file, sr=None)
-        
+
         non_mute_intervals = librosa.effects.split(y, top_db=20)
         speaking_samples = sum([end - start for start, end in non_mute_intervals])
         total_samples = len(y)
         silence_ratio = 1.0 - (speaking_samples / total_samples)
-        
+
         f0, voiced_flag, voiced_probs = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
         pitch_std = np.nanstd(f0) if f0 is not None else 0
         pitch_variation = "low"
         if pitch_std > 20: pitch_variation = "medium"
         if pitch_std > 40: pitch_variation = "high"
-        
+
         rms = librosa.feature.rms(y=y)
         mean_rms = np.mean(rms)
         energy_level = "low"
         if mean_rms > 0.05: energy_level = "moderate"
         if mean_rms > 0.15: energy_level = "high"
-            
+
         raw_score = 7.0 + (mean_rms * 10) - (silence_ratio * 2)
         clamped_score = max(1.0, min(10.0, round(raw_score, 1)))
-            
+
         return {
-            "confidence_score": clamped_score, 
-            "speaking_pace_wpm": 130, 
+            "confidence_score": clamped_score,
+            "speaking_pace_wpm": 130,
             "silence_ratio": round(silence_ratio, 2),
             "pitch_variation": pitch_variation,
             "energy_level": energy_level
@@ -299,29 +306,25 @@ async def audio_confidence(file: UploadFile = File(...)):
 async def text_to_speech(request: TTSRequest, background_tasks: BackgroundTasks):
     try:
         lang_code = normalize_lang_code(request.language)
-        
+
         voice_map = {
-            "en": "en-IN-NeerjaNeural",   
-            "hi": "hi-IN-SwaraNeural",    
-            "ta": "ta-IN-PallaviNeural",  
-            "te": "te-IN-ShrutiNeural",   
-            "bn": "bn-IN-TanishaaNeural", 
-            "mr": "mr-IN-AarohiNeural"    
+            "en": "en-IN-NeerjaNeural",
+            "hi": "hi-IN-SwaraNeural"
         }
-        
+
         voice = voice_map.get(lang_code, "en-IN-NeerjaNeural")
         output_file = f"ai_response_{lang_code}_{uuid.uuid4().hex}.mp3"
-        
+
         communicate = edge_tts.Communicate(request.text, voice)
         await communicate.save(output_file)
-        
+
         background_tasks.add_task(os.remove, output_file)
-        
+
         return FileResponse(
-            path=output_file, 
-            media_type="audio/mpeg", 
+            path=output_file,
+            media_type="audio/mpeg",
             filename=output_file
         )
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
