@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="InterviewAI ML Backend", version="4.0")
+app = FastAPI(title="InterviewAI ML Backend", version="5.0")
 client = Groq()
 
 print("Waking up the RTX 5060 and loading Whisper into VRAM...")
@@ -42,12 +42,21 @@ class TTSRequest(BaseModel):
     text: str
     language: str = "en" 
 
+class ChatMessage(BaseModel):
+    speaker: str # "ai" or "user"
+    text: str
+
+class GenerateQuestionInput(BaseModel):
+    domain: str
+    language: str
+    history: List[ChatMessage]
+
 # ---------------------------------------------------------
 # ROUTE 1: HEALTH CHECK (/health)
 # ---------------------------------------------------------
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "ML Backend running with Voice capabilities!"}
+    return {"status": "ok", "service": "ML Backend running with Live Interview capabilities!"}
 
 # ---------------------------------------------------------
 # ROUTE 2: SPEECH TO TEXT (/stt)
@@ -74,7 +83,40 @@ async def speech_to_text(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------------------------------------------------
-# ROUTE 3: INTERVIEW EVALUATION (/evaluate)
+# ROUTE 3: GENERATE NEXT QUESTION (/generate-question)
+# ---------------------------------------------------------
+@app.post("/generate-question")
+def generate_question(request: GenerateQuestionInput):
+    try:
+        system_prompt = f"""You are an expert technical interviewer conducting a mock interview for a {request.domain} role.
+        Your task is to ask the NEXT single interview question based on the conversation history.
+        - Ask ONLY ONE question.
+        - Do NOT evaluate the candidate's previous answer (save that for the end).
+        - Keep it conversational, professional, and concise.
+        - You MUST respond entirely in this language: {request.language}.
+        """
+
+        messages = [{"role": "system", "content": system_prompt}]
+        for msg in request.history:
+            role = "assistant" if msg.speaker == "ai" else "user"
+            messages.append({"role": role, "content": msg.text})
+
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=messages,
+            temperature=0.7, 
+            max_tokens=150,  
+        )
+
+        next_question = completion.choices[0].message.content.strip()
+
+        return {"question": next_question}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ---------------------------------------------------------
+# ROUTE 4: INTERVIEW EVALUATION (/evaluate)
 # ---------------------------------------------------------
 @app.post("/evaluate")
 def evaluate_interview(request: EvaluateInput):
@@ -115,7 +157,7 @@ def evaluate_interview(request: EvaluateInput):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------------------------------------------------
-# ROUTE 4: RESUME PARSER (/parse-resume)
+# ROUTE 5: RESUME PARSER (/parse-resume)
 # ---------------------------------------------------------
 @app.post("/parse-resume")
 def parse_resume(request: ParseResumeInput):
@@ -160,7 +202,7 @@ def parse_resume(request: ParseResumeInput):
             os.remove(temp_pdf)
 
 # ---------------------------------------------------------
-# ROUTE 5: AUDIO CONFIDENCE SCORING (/audio-confidence)
+# ROUTE 6: AUDIO CONFIDENCE SCORING (/audio-confidence)
 # ---------------------------------------------------------
 @app.post("/audio-confidence")
 async def audio_confidence(file: UploadFile = File(...)):
@@ -202,16 +244,19 @@ async def audio_confidence(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------------------------------------------------
-# ROUTE 6: TEXT-TO-SPEECH (/tts)
+# ROUTE 7: TEXT-TO-SPEECH (/tts)
 # ---------------------------------------------------------
 @app.post("/tts")
 async def text_to_speech(request: TTSRequest):
     try:
         # Map the detected language to a premium Indian neural voice
         voice_map = {
-            "en": "en-IN-NeerjaNeural", # Indian English (Female)
-            "hi": "hi-IN-SwaraNeural",  # Hindi (Female)
-            "ta": "ta-IN-PallaviNeural" # Tamil (Female)
+            "en": "en-IN-NeerjaNeural",   # Indian English
+            "hi": "hi-IN-SwaraNeural",    # Hindi
+            "ta": "ta-IN-PallaviNeural",  # Tamil
+            "te": "te-IN-ShrutiNeural",   # Telugu
+            "bn": "bn-IN-TanishaaNeural", # Bengali
+            "mr": "mr-IN-AarohiNeural"    # Marathi
         }
         
         # Default to Indian English if the language isn't in our map yet
