@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="InterviewAI ML Backend", version="5.8")
+app = FastAPI(title="InterviewAI ML Backend", version="5.9")
 client = Groq()
 
 # CORS — allows Node.js backend to call this service
@@ -51,6 +51,7 @@ def get_full_lang_name(lang_code: str) -> str:
         "hi": "Hindi (in Devanagari script)"
     }
     return mapping.get(lang_code, "English")
+
 
 # --- PYDANTIC MODELS ---
 
@@ -86,7 +87,7 @@ class GenerateQuestionInput(BaseModel):
 # ---------------------------------------------------------
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "ML Backend V5.8 — Polished Interviewer + Fixed Scoring"}
+    return {"status": "ok", "service": "ML Backend V5.9 — Flawless Interview Flow"}
 
 
 # ---------------------------------------------------------
@@ -116,9 +117,10 @@ async def speech_to_text(file: UploadFile = File(...)):
 
 # ---------------------------------------------------------
 # ROUTE 3: GENERATE NEXT QUESTION (/generate-question)
-# FIX 2: Completely rewritten prompts for both languages.
-#         AI now has a persona (Sarah/Priya), reacts naturally
-#         to answers, and never introduces itself by name again.
+#
+# v5.9 FIX: Removed model's ability to accuse candidate of
+# repeating. Added explicit banned phrases list. Model can
+# ONLY use positive/neutral acknowledgments.
 # ---------------------------------------------------------
 @app.post("/generate-question")
 def generate_question(request: GenerateQuestionInput):
@@ -133,8 +135,11 @@ def generate_question(request: GenerateQuestionInput):
 
 नियम:
 - एक बार में केवल एक सवाल पूछें।
-- उम्मीदवार के पिछले जवाब पर एक छोटी सी स्वाभाविक प्रतिक्रिया दें (जैसे "अच्छा।" या "ठीक है, समझ आया।") फिर अगला सवाल पूछें।
-- अगर उम्मीदवार को जवाब नहीं पता, तो briefly encourage करें और आगे बढ़ें।
+- उम्मीदवार के पिछले जवाब पर एक छोटी सी स्वाभाविक प्रतिक्रिया दें।
+- केवल positive या neutral acknowledgment दें जैसे: "अच्छा।", "ठीक है।", "समझ आया।", "बढ़िया।"
+- कभी मत कहें कि उम्मीदवार repeat कर रहा है।
+- "repeating", "फिर से वही", "दोबारा" जैसे शब्द कभी मत इस्तेमाल करें।
+- अगर उम्मीदवार को जवाब नहीं पता, तो कहें "कोई बात नहीं, आगे बढ़ते हैं।" और अगला सवाल पूछें।
 - पूरा जवाब 3 sentences से कम रखें।
 - पहले message के बाद अपना नाम कभी मत बताएं।
 - ABSOLUTE RULE: केवल और केवल हिंदी में बोलें। एक भी अंग्रेजी शब्द नहीं।
@@ -147,8 +152,11 @@ Your personality: warm but professional, encouraging but direct. You sound like 
 
 RULES:
 - Ask ONE focused question at a time.
-- Naturally react to the candidate's previous answer with a brief acknowledgment (1 sentence max) before your next question. Examples: "Good point.", "Interesting approach.", "That's fair, let's explore something else."
-- If the candidate says they don't know, encourage them briefly and move on gracefully.
+- Before your question, acknowledge the previous answer in ONE short sentence.
+- You may ONLY use positive or neutral acknowledgments such as: "Good point.", "That makes sense.", "Interesting approach.", "Got it.", "Fair enough.", "I like that framework."
+- NEVER accuse the candidate of repeating themselves.
+- NEVER use the words "repeating", "again", "you said that already", or any variation.
+- If the candidate says they don't know, say "No worries, let's move on." and ask the next question.
 - Keep your TOTAL response under 3 sentences.
 - NEVER introduce yourself by name again after the first message.
 - Do NOT evaluate, score, or give feedback during the interview.
@@ -187,10 +195,10 @@ RULES:
 
 # ---------------------------------------------------------
 # ROUTE 4: INTERVIEW EVALUATION (/evaluate)
-# FIX 1: Rewrote scoring prompt to fix technical_accuracy = 0.
-#         Handles any speaker label format from Node.js.
-#         Explicit scoring rules prevent 0 scores.
-#         Added safety net clamp on all scores.
+#
+# Handles any speaker label format from Node.js.
+# Explicit scoring rules prevent 0 scores.
+# Python-level safety clamp as final guarantee.
 # ---------------------------------------------------------
 @app.post("/evaluate")
 def evaluate_interview(request: EvaluateInput):
@@ -208,7 +216,7 @@ The transcript below contains an interview conversation. Lines starting with "AI
 
 SCORING RULES (all scores must be between 1.0 and 10.0, NEVER 0):
 - "technical_accuracy": Score based ONLY on the candidate's answers.
-    * Candidate says "I don't know" or gives no technical content → score 1-2
+    * Candidate says "I don't know" or gives no technical content at all → score 1-2
     * Partial or basic answers → score 3-5
     * Mostly correct answers → score 6-7
     * Strong and detailed answers → score 8-10
@@ -355,9 +363,6 @@ async def audio_confidence(file: UploadFile = File(...)):
 
 # ---------------------------------------------------------
 # ROUTE 7: TEXT-TO-SPEECH (/tts)
-# FIX 3: Added rate/pitch tuning to reduce robotic feel.
-#         Voice names now match AI personas (Sarah/Priya).
-#         Both voices are female to match persona names.
 # ---------------------------------------------------------
 @app.post("/tts")
 async def text_to_speech(request: TTSRequest, background_tasks: BackgroundTasks):
