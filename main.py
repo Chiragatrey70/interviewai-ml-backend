@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any
 from groq import Groq
@@ -17,14 +18,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="InterviewAI ML Backend", version="5.7")
+app = FastAPI(title="InterviewAI ML Backend", version="5.8")
 client = Groq()
+
+# CORS — allows Node.js backend to call this service
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 print("Waking up and loading Whisper into CPU RAM...")
-# Modified for Hugging Face Free Tier (CPU only)
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 print("Whisper is locked and loaded on CPU!")
 
-# --- HELPER FUNCTIONS (Defense in Depth) ---
+# --- HELPER FUNCTIONS ---
 def normalize_lang_code(lang: str) -> str:
     """Ensures we always have a clean 2-letter ISO code for TTS routing."""
     lang = lang.lower().strip()
@@ -32,7 +42,7 @@ def normalize_lang_code(lang: str) -> str:
         "english": "en", "en": "en",
         "hindi": "hi", "hi": "hi"
     }
-    return mapping.get(lang, "en")  # Default to English if anything else is sent
+    return mapping.get(lang, "en")
 
 def get_full_lang_name(lang_code: str) -> str:
     """Gives Llama 3 the explicit full name of the language to prevent English bleed-through."""
@@ -42,7 +52,7 @@ def get_full_lang_name(lang_code: str) -> str:
     }
     return mapping.get(lang_code, "English")
 
-# --- PYDANTIC MODELS (The API Contract) ---
+# --- PYDANTIC MODELS ---
 
 class TranscriptTurn(BaseModel):
     speaker: str  # "ai" or "user"
@@ -59,7 +69,7 @@ class ParseResumeInput(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
-    language: str  # No default value, forcing frontend compliance
+    language: str  # No default — forces frontend compliance
 
 class ChatMessage(BaseModel):
     speaker: str  # "ai" or "user"
@@ -76,7 +86,7 @@ class GenerateQuestionInput(BaseModel):
 # ---------------------------------------------------------
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "ML Backend running with V5.7 (Bilingual Prompt Isolation)"}
+    return {"status": "ok", "service": "ML Backend V5.8 — Polished Interviewer + Fixed Scoring"}
 
 
 # ---------------------------------------------------------
@@ -106,6 +116,9 @@ async def speech_to_text(file: UploadFile = File(...)):
 
 # ---------------------------------------------------------
 # ROUTE 3: GENERATE NEXT QUESTION (/generate-question)
+# FIX 2: Completely rewritten prompts for both languages.
+#         AI now has a persona (Sarah/Priya), reacts naturally
+#         to answers, and never introduces itself by name again.
 # ---------------------------------------------------------
 @app.post("/generate-question")
 def generate_question(request: GenerateQuestionInput):
@@ -113,37 +126,47 @@ def generate_question(request: GenerateQuestionInput):
         history_length = len(request.history)
         lang_code = normalize_lang_code(request.language)
 
-        # --- BILINGUAL PROMPT ISOLATION ---
-        # Each language has its own fully isolated prompt.
-        # They cannot interfere with each other.
-
         if lang_code == "hi":
-            system_prompt = f"""आप एक अनुभवी तकनीकी इंटरव्यूअर हैं जो {request.domain} के क्षेत्र में एक उम्मीदवार का मॉक इंटरव्यू ले रहे हैं।
+            system_prompt = f"""आप Priya हैं, एक senior technical interviewer जो एक top Indian tech company में {request.domain} role के लिए एक उम्मीदवार का mock interview ले रही हैं।
 
-ABSOLUTE RULE: आपका पूरा जवाब केवल और केवल हिंदी में होना चाहिए। एक भी अंग्रेजी शब्द नहीं।
+आपकी personality: professional लेकिन friendly, जैसे एक असली Indian interviewer होती है।
 
-आपका काम:
-- केवल एक ही सवाल पूछें।
-- पिछले जवाब का मूल्यांकन मत करें।
-- सवाल स्वाभाविक, professional और संक्षिप्त होना चाहिए।
-- इंटरव्यू में अब तक {history_length} exchanges हो चुके हैं। अगर यह 8 या उससे ज़्यादा है, तो उम्मीदवार को धन्यवाद देते हुए इंटरव्यू समाप्त करें।
+नियम:
+- एक बार में केवल एक सवाल पूछें।
+- उम्मीदवार के पिछले जवाब पर एक छोटी सी स्वाभाविक प्रतिक्रिया दें (जैसे "अच्छा।" या "ठीक है, समझ आया।") फिर अगला सवाल पूछें।
+- अगर उम्मीदवार को जवाब नहीं पता, तो briefly encourage करें और आगे बढ़ें।
+- पूरा जवाब 3 sentences से कम रखें।
+- पहले message के बाद अपना नाम कभी मत बताएं।
+- ABSOLUTE RULE: केवल और केवल हिंदी में बोलें। एक भी अंग्रेजी शब्द नहीं।
+- इंटरव्यू में अब तक {history_length} exchanges हुए हैं। 8 या उससे ज़्यादा होने पर गर्मजोशी से धन्यवाद देकर interview समाप्त करें।"""
 
-याद रखें: आप एक भारतीय कंपनी के senior interviewer हैं। हिंदी में बात करें जैसे एक असली इंटरव्यू में करते हैं।"""
+        else:
+            system_prompt = f"""You are Sarah, a senior technical interviewer at a top Indian tech company, conducting a mock interview for a {request.domain} role.
 
-        else:  # English
-            system_prompt = f"""You are an expert technical interviewer conducting a mock interview for a {request.domain} role.
-- Ask ONLY ONE question.
-- Do NOT evaluate the candidate's previous answer (save that for the end).
-- Keep it conversational, professional, and concise.
-- The interview has had {history_length} exchanges so far. If this is 8 or more exchanges, wrap up naturally by thanking the candidate and telling them the interview is over."""
+Your personality: warm but professional, encouraging but direct. You sound like a real person, not a chatbot.
+
+RULES:
+- Ask ONE focused question at a time.
+- Naturally react to the candidate's previous answer with a brief acknowledgment (1 sentence max) before your next question. Examples: "Good point.", "Interesting approach.", "That's fair, let's explore something else."
+- If the candidate says they don't know, encourage them briefly and move on gracefully.
+- Keep your TOTAL response under 3 sentences.
+- NEVER introduce yourself by name again after the first message.
+- Do NOT evaluate, score, or give feedback during the interview.
+- The interview has had {history_length} exchanges. If 8 or more, wrap up warmly — thank the candidate and let them know you'll be reviewing their responses."""
 
         messages = [{"role": "system", "content": system_prompt}]
 
         if not request.history:
             if lang_code == "hi":
-                messages.append({"role": "user", "content": f"{request.domain} के लिए इंटरव्यू शुरू करें। पहला सवाल हिंदी में पूछें।"})
+                messages.append({
+                    "role": "user",
+                    "content": f"{request.domain} के लिए interview शुरू करें। आपका नाम Priya है। अपना brief introduction दें और पहला सवाल हिंदी में पूछें।"
+                })
             else:
-                messages.append({"role": "user", "content": f"Start the interview. Ask the very first question for a {request.domain} role."})
+                messages.append({
+                    "role": "user",
+                    "content": f"Start the interview. Your name is Sarah. Briefly introduce yourself as the interviewer and ask the first question for a {request.domain} role."
+                })
         else:
             for msg in request.history:
                 role = "assistant" if msg.speaker == "ai" else "user"
@@ -164,6 +187,10 @@ ABSOLUTE RULE: आपका पूरा जवाब केवल और के
 
 # ---------------------------------------------------------
 # ROUTE 4: INTERVIEW EVALUATION (/evaluate)
+# FIX 1: Rewrote scoring prompt to fix technical_accuracy = 0.
+#         Handles any speaker label format from Node.js.
+#         Explicit scoring rules prevent 0 scores.
+#         Added safety net clamp on all scores.
 # ---------------------------------------------------------
 @app.post("/evaluate")
 def evaluate_interview(request: EvaluateInput):
@@ -175,34 +202,57 @@ def evaluate_interview(request: EvaluateInput):
         for turn in request.transcript:
             script += f"{turn.speaker.upper()}: {turn.text}\n"
 
-        system_prompt = f"""You are an expert technical interviewer analyzing a candidate for a {request.domain} role.
-        CRITICAL INSTRUCTION: All textual feedback ("feedback", "strengths", "improvements") MUST be written exclusively in {full_lang_name}.
-        Review the transcript and return strict JSON exactly matching this structure:
-        {{
-          "scores": {{
-            "communication": <float 1-10>,
-            "technical_accuracy": <float 1-10>,
-            "confidence": <float 1-10>,
-            "clarity": <float 1-10>,
-            "overall": <float 1-10>
-          }},
-          "feedback": "<2-3 sentences of overall feedback>",
-          "strengths": ["<strength 1>", "<strength 2>"],
-          "improvements": ["<improvement 1>", "<improvement 2>"],
-          "filler_words": {{"um": <int>, "like": <int>, "uh": <int>}}
-        }}"""
+        system_prompt = f"""You are a strict but fair technical interviewer evaluating a job candidate for a {request.domain} role.
+
+The transcript below contains an interview conversation. Lines starting with "AI", "INTERVIEWER", "SARAH", or "PRIYA" are the interviewer's questions. ALL OTHER lines are the CANDIDATE's answers — these are what you must evaluate.
+
+SCORING RULES (all scores must be between 1.0 and 10.0, NEVER 0):
+- "technical_accuracy": Score based ONLY on the candidate's answers.
+    * Candidate says "I don't know" or gives no technical content → score 1-2
+    * Partial or basic answers → score 3-5
+    * Mostly correct answers → score 6-7
+    * Strong and detailed answers → score 8-10
+- "communication": How clearly and professionally did the candidate express themselves?
+- "confidence": Did they sound confident or hesitant?
+- "clarity": Were their answers structured and easy to follow?
+- "overall": A fair weighted average of all four scores above.
+
+CRITICAL: All text in "feedback", "strengths", and "improvements" MUST be written exclusively in {full_lang_name}.
+
+Return ONLY this strict JSON:
+{{
+  "scores": {{
+    "communication": <float 1-10>,
+    "technical_accuracy": <float 1-10>,
+    "confidence": <float 1-10>,
+    "clarity": <float 1-10>,
+    "overall": <float 1-10>
+  }},
+  "feedback": "<2-3 sentences of overall feedback in {full_lang_name}>",
+  "strengths": ["<strength 1>", "<strength 2>"],
+  "improvements": ["<improvement 1>", "<improvement 2>"],
+  "filler_words": {{"um": <int>, "like": <int>, "uh": <int>}}
+}}"""
 
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Here is the transcript:\n{script}"}
+                {"role": "user", "content": f"Here is the interview transcript:\n\n{script}"}
             ],
             temperature=0.2,
             response_format={"type": "json_object"},
         )
 
-        return json.loads(completion.choices[0].message.content)
+        result = json.loads(completion.choices[0].message.content)
+
+        # Safety net: clamp all scores to 1-10 regardless of what model returns
+        if "scores" in result:
+            for key in result["scores"]:
+                result["scores"][key] = max(1.0, min(10.0, float(result["scores"][key])))
+
+        return result
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -270,7 +320,11 @@ async def audio_confidence(file: UploadFile = File(...)):
         total_samples = len(y)
         silence_ratio = 1.0 - (speaking_samples / total_samples)
 
-        f0, voiced_flag, voiced_probs = librosa.pyin(y, fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'))
+        f0, voiced_flag, voiced_probs = librosa.pyin(
+            y,
+            fmin=librosa.note_to_hz('C2'),
+            fmax=librosa.note_to_hz('C7')
+        )
         pitch_std = np.nanstd(f0) if f0 is not None else 0
         pitch_variation = "low"
         if pitch_std > 20: pitch_variation = "medium"
@@ -301,6 +355,9 @@ async def audio_confidence(file: UploadFile = File(...)):
 
 # ---------------------------------------------------------
 # ROUTE 7: TEXT-TO-SPEECH (/tts)
+# FIX 3: Added rate/pitch tuning to reduce robotic feel.
+#         Voice names now match AI personas (Sarah/Priya).
+#         Both voices are female to match persona names.
 # ---------------------------------------------------------
 @app.post("/tts")
 async def text_to_speech(request: TTSRequest, background_tasks: BackgroundTasks):
@@ -308,14 +365,20 @@ async def text_to_speech(request: TTSRequest, background_tasks: BackgroundTasks)
         lang_code = normalize_lang_code(request.language)
 
         voice_map = {
-            "en": "en-IN-NeerjaNeural",
-            "hi": "hi-IN-SwaraNeural"
+            "en": "en-IN-NeerjaNeural",   # Female — matches persona "Sarah"
+            "hi": "hi-IN-SwaraNeural"     # Female — matches persona "Priya"
         }
 
         voice = voice_map.get(lang_code, "en-IN-NeerjaNeural")
         output_file = f"ai_response_{lang_code}_{uuid.uuid4().hex}.mp3"
 
-        communicate = edge_tts.Communicate(request.text, voice)
+        # Rate and pitch tuning to reduce robotic feel
+        communicate = edge_tts.Communicate(
+            request.text,
+            voice,
+            rate="-5%",    # Slightly slower = more natural pacing
+            pitch="-3Hz"   # Slightly lower = warmer, less robotic
+        )
         await communicate.save(output_file)
 
         background_tasks.add_task(os.remove, output_file)
