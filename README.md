@@ -268,5 +268,6 @@ interviewai-ml-backend/
 
 ## Related Repositories
 
-- *Frontend:* [INTERVIEW-PLATFOARM-FRONTEND](https://github.com/Sanyam26362/INTERVIEW-PLATFOARM-FRONTEND) — Next.js 16 + TypeScript + Tailwind + shadcn/ui + Clerk Auth
+- *Frontend:* [INTERVIEW-PLATFOARM-FRONTEND](https://github.com/Sanyam26362/INTERVIEW-PLATFOARM-FRONTEND-) — Tailwind + shadcn/ui
+- *Backend:* [INTERVIEW-PLATFOARM-BACKEND](https://github.com/Sanyam26362/AI-Mock-Interview-Platform-BACKEND-) — Next.js 16 + Clerk Auth + TypeScript
 - *Live App:* [interview-platfoarm-frontend.vercel.app](https://interview-platfoarm-frontend.vercel.app)
