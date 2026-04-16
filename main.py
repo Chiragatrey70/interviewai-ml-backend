@@ -68,7 +68,7 @@ class EvaluateInput(BaseModel):
 
 class ParseResumeInput(BaseModel):
     resume_base64: str
-    filename: str
+    
 
 class TTSRequest(BaseModel):
     text: str
