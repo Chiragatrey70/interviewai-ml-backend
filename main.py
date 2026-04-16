@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTa
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from groq import Groq
 from faster_whisper import WhisperModel
 import os
@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI(title="InterviewAI ML Backend", version="5.9")
+app = FastAPI(title="InterviewAI ML Backend", version="5.10")
 client = Groq()
 
 # CORS — allows Node.js backend to call this service
@@ -63,6 +63,8 @@ class EvaluateInput(BaseModel):
     transcript: List[TranscriptTurn]
     domain: str
     language: str
+    # NEW: Optional audio metrics passed from Node.js at the end of the interview
+    audio_metrics: Optional[Dict[str, str]] = None 
 
 class ParseResumeInput(BaseModel):
     resume_base64: str
@@ -87,7 +89,7 @@ class GenerateQuestionInput(BaseModel):
 # --------------------------------------------------------
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "ML Backend V5.9 — Flawless Interview Flow"}
+    return {"status": "ok", "service": "ML Backend V5.10 — Audio Feedback & Identity Fix"}
 
 
 # ---------------------------------------------------------
@@ -117,10 +119,6 @@ async def speech_to_text(file: UploadFile = File(...)):
 
 # ---------------------------------------------------------
 # ROUTE 3: GENERATE NEXT QUESTION (/generate-question)
-#
-# v5.9 FIX: Removed model's ability to accuse candidate of
-# repeating. Added explicit banned phrases list. Model can
-# ONLY use positive/neutral acknowledgments.
 # ---------------------------------------------------------
 @app.post("/generate-question")
 def generate_question(request: GenerateQuestionInput):
@@ -195,10 +193,6 @@ RULES:
 
 # ---------------------------------------------------------
 # ROUTE 4: INTERVIEW EVALUATION (/evaluate)
-#
-# Handles any speaker label format from Node.js.
-# Explicit scoring rules prevent 0 scores.
-# Python-level safety clamp as final guarantee.
 # ---------------------------------------------------------
 @app.post("/evaluate")
 def evaluate_interview(request: EvaluateInput):
@@ -212,6 +206,11 @@ def evaluate_interview(request: EvaluateInput):
 
         system_prompt = f"""You are a strict but fair technical interviewer evaluating a job candidate for a {request.domain} role.
 
+CRITICAL IDENTITY RULE:
+- "Sarah" (English) and "Priya" (Hindi) are the names of the AI INTERVIEWERS.
+- You are evaluating the CANDIDATE. 
+- NEVER call the candidate "Sarah" or "Priya". Refer to them strictly as "the candidate".
+
 The transcript below contains an interview conversation. Lines starting with "AI", "INTERVIEWER", "SARAH", or "PRIYA" are the interviewer's questions. ALL OTHER lines are the CANDIDATE's answers — these are what you must evaluate.
 
 SCORING RULES (all scores must be between 1.0 and 10.0, NEVER 0):
@@ -224,7 +223,19 @@ SCORING RULES (all scores must be between 1.0 and 10.0, NEVER 0):
 - "confidence": Did they sound confident or hesitant?
 - "clarity": Were their answers structured and easy to follow?
 - "overall": A fair weighted average of all four scores above.
+"""
+        # Inject Audio Metrics into the prompt if the frontend provided them
+        if request.audio_metrics:
+            system_prompt += f"""
+VOCAL DELIVERY DATA:
+The candidate's audio was analyzed during the interview. 
+Pitch Variation: {request.audio_metrics.get('pitch_variation', 'average')}
+Energy/Volume Level: {request.audio_metrics.get('energy_level', 'average')}
 
+CRITICAL AUDIO INSTRUCTION: You MUST include 1 sentence in the "feedback" paragraph commenting on their pitch and volume based on the data above (e.g., "Your vocal energy was a bit low," or "You had great pitch variation which kept the answers engaging").
+"""
+
+        system_prompt += f"""
 CRITICAL: All text in "feedback", "strengths", and "improvements" MUST be written exclusively in {full_lang_name}.
 
 Return ONLY this strict JSON:
