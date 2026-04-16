@@ -82,9 +82,9 @@ class GenerateQuestionInput(BaseModel):
     history: List[ChatMessage]
 
 
-# ---------------------------------------------------------
+# --------------------------------------------------------
 # ROUTE 1: HEALTH CHECK (/health)
-# ---------------------------------------------------------
+# --------------------------------------------------------
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "ML Backend V5.9 — Flawless Interview Flow"}
